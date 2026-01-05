@@ -8,7 +8,7 @@ export CODECRAFTERS_SUBMISSION_DIR=$(pwd)
 export CODECRAFTERS_REPOSITORY_DIR=$(pwd)
 
 # 3. Choose which stage to test (Change "jm1" to other slugs as you progress)
-export CODECRAFTERS_TEST_CASES_JSON='[{"slug": "wy1", "tester_log_prefix": "stage-3", "title": "Stage 3: Respond to multiple PINGs"}]'
+export CODECRAFTERS_TEST_CASES_JSON='[{"slug": "zu2", "tester_log_prefix": "stage-4", "title": "Stage 4: Handle concurrent clients"}]'
 
 # 4. Run the tester
 $TESTER_PATH
