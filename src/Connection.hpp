@@ -1,0 +1,47 @@
+#pragma once
+#include <vector>
+#include <string>
+
+//Typedef
+typedef std::vector<unsigned char>::const_iterator BufferedIterator;
+
+//======================  SECURITY LIMITS START  ======================
+
+// 1. Max size of a single Bulk String (16MB).
+const size_t MAX_MSG_SIZE = 16 * 1024 * 1024;     
+
+// 2. Max size of the entire buffer.
+// MUST be larger than MAX_MSG_SIZE to account for protocol headers (*3\r\n$5...)
+// We add 1 MB of headroom just to be safe.
+const size_t MAX_REQUEST_SIZE = MAX_MSG_SIZE + (1024 * 1024); //17MB
+
+// 3. Max number of arguments (1024). 
+const int MAX_ARGS_COUNT = 1024;
+
+//======================   SECURITY LIMITS END   ======================
+
+
+class Connection {
+public:
+    int fd = -1;
+    bool want_read = false;
+    bool want_write = false;
+    bool want_close = false;
+
+    // We use your existing buffer types
+    std::vector<unsigned char> incoming_message;
+    std::vector<unsigned char> outgoing_message;
+
+    Connection(int fd); // Constructor
+    ~Connection();      // Destructor
+
+    void handle_read();
+    void handle_write();
+
+private:
+    // Helper functions specific to a single connection
+    bool try_one_request();
+    void buffer_append(std::vector<unsigned char> &buffer, const unsigned char *data, unsigned long length);
+    void buffer_consume(std::vector<unsigned char> &buffer, unsigned long length);
+    int parse_header_value(BufferedIterator start, BufferedIterator end);
+};
