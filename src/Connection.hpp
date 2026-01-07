@@ -1,7 +1,7 @@
 #pragma once
 #include <vector>
 #include <string>
-#include <KeyValueStore.hpp>
+#include "KeyValueStore.hpp"
 
 //Typedef
 typedef std::vector<unsigned char>::const_iterator BufferedIterator;
