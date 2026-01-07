@@ -20,7 +20,7 @@ public:
             return it->second;
         }
         return std::nullopt;
-    }   
+    }
 
 private:
     // The actual "Town Square" where data lives

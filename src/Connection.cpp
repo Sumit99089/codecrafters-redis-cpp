@@ -1,3 +1,4 @@
+#include "KeyValueStore.hpp"
 #include "Connection.hpp"
 #include <iostream>
 #include <unistd.h>
@@ -289,7 +290,45 @@ bool Connection::try_one_request()
             }
         }
         else if( command == "GET"){
+            if (request_arguments.size() > 1){
+                std::string &key = request_arguments[1];
+                std::optional<std::string> result = this->kv_store.get(key);
+                if(result.has_value() == true){
+                    std::string value = *result;
+                    std::string response = "$"+std::to_string(value.length())+"\r\n"+ value + "\r\n";
 
+                    buffer_append(
+                        this->outgoing_message,
+                        (const unsigned char *)response.c_str(),
+                        response.length());
+                }
+                else{
+                    const char *null_response = "$-1\r\n";
+                    buffer_append(
+                        this->outgoing_message,
+                        (const unsigned char *)null_response,
+                        strlen(null_response));
+                }
+
+            }
+            else{
+                const char *err = "-ERR wrong number of arguments for 'get' command\r\n";
+                buffer_append(this->outgoing_message, (const unsigned char *)err, strlen(err));
+            }
+        }
+        else if( command == "SET"){
+            if(request_arguments.size() > 2){
+                const std::string &key = request_arguments[1];
+                const std::string &value = request_arguments[2];
+
+                this->kv_store.set(key, value);
+                const char *response = "+OK\r\n";
+                buffer_append(this->outgoing_message, (const unsigned char *)response, strlen(response));
+            }
+            else{
+                const char *err = "-ERR wrong number of arguments for 'set' command\r\n";
+                buffer_append(this->outgoing_message, (const unsigned char *)err, strlen(err));
+            }
         }
         else
         {
