@@ -182,7 +182,7 @@ void Server::accept_new_connection()
     // Set the new client socket to non-blocking mode
     set_fd_nonblocking(client_fd);
 
-    Connection *connection = new Connection(client_fd);
+    Connection *connection = new Connection(client_fd, kv_store);
 
     if (connection)
     {

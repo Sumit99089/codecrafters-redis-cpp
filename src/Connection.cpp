@@ -6,7 +6,7 @@
 #include <sys/socket.h>
 
 // Constructor Definition
-Connection::Connection(int fd)
+Connection::Connection(int fd, KeyValueStore& store): kv_store(store)
 {
     this->fd = fd;
     this->want_read = true;
@@ -189,6 +189,7 @@ bool Connection::try_one_request()
         {
             return false; // partial request
         }
+
         if (this->incoming_message[cursor] != '$')
         {
             std::cerr << "Protocol Error: Expected character $\n";
@@ -286,6 +287,9 @@ bool Connection::try_one_request()
                 const char *err = "-ERR wrong number of arguments for 'echo' command\r\n";
                 buffer_append(this->outgoing_message, (const unsigned char *)err, strlen(err));
             }
+        }
+        else if( command == "GET"){
+
         }
         else
         {
