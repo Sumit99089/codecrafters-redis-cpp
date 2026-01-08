@@ -7,7 +7,7 @@
 #include <sys/socket.h>
 
 // Constructor Definition
-Connection::Connection(int fd, KeyValueStore& store): kv_store(store)
+Connection::Connection(int fd, KeyValueStore &store) : kv_store(store)
 {
     this->fd = fd;
     this->want_read = true;
@@ -158,7 +158,7 @@ bool Connection::try_one_request()
         return false;
     }
 
-    int array_length = parse_header_value(
+    long long array_length = parse_header_value(
         this->incoming_message.begin() + 1,
         request_header_end_iterator);
 
@@ -173,7 +173,7 @@ bool Connection::try_one_request()
     // We use static_cast<size_t> to tell the compiler: "I know this int is positive now, so treat it as unsigned."
     if (static_cast<size_t>(array_length) > MAX_ARGS_COUNT)
     {
-        std::cerr << "Security: Array too large\n"; 
+        std::cerr << "Security: Array too large\n";
         this->want_read = false;
         this->want_close = true;
         return false;
@@ -210,7 +210,7 @@ bool Connection::try_one_request()
             return false;
         }
 
-        int string_length = parse_header_value(
+        long long string_length = parse_header_value(
             this->incoming_message.begin() + cursor + 1,
             iterator);
 
@@ -271,7 +271,6 @@ bool Connection::try_one_request()
         }
         else if (command == "ECHO")
         {
-
             if (request_arguments.size() > 1)
             {
                 std::string payload = request_arguments[1];
@@ -289,45 +288,137 @@ bool Connection::try_one_request()
                 buffer_append(this->outgoing_message, (const unsigned char *)err, strlen(err));
             }
         }
-        else if( command == "GET"){
-            if (request_arguments.size() > 1){
+        else if (command == "GET")
+        {
+
+            if (request_arguments.size() > 1)
+            {
                 std::string &key = request_arguments[1];
-                std::optional<std::string> result = this->kv_store.get(key);
-                if(result.has_value() == true){
-                    std::string value = *result;
-                    std::string response = "$"+std::to_string(value.length())+"\r\n"+ value + "\r\n";
+                std::optional<KeyValueStore::ValueEntry> result = this->kv_store.get(key);
+                if (result.has_value() == true)
+                {
+                    std::string value = result->value;
+                    std::optional<std::chrono::steady_clock::time_point> expires_at = result->expires_at;
+                    std::string response;
+                    if (expires_at <= std::chrono::steady_clock::now())
+                    {
+                        response = "$-1\r\n";
+                    }
+                    else
+                    {
+                        response = "$" + std::to_string(value.length()) + "\r\n" + value + "\r\n";
+                    }
 
                     buffer_append(
                         this->outgoing_message,
                         (const unsigned char *)response.c_str(),
                         response.length());
                 }
-                else{
+                else
+                {
                     const char *null_response = "$-1\r\n";
                     buffer_append(
                         this->outgoing_message,
                         (const unsigned char *)null_response,
                         strlen(null_response));
                 }
-
             }
-            else{
+            else
+            {
                 const char *err = "-ERR wrong number of arguments for 'get' command\r\n";
                 buffer_append(this->outgoing_message, (const unsigned char *)err, strlen(err));
             }
         }
-        else if( command == "SET"){
-            if(request_arguments.size() > 2){
-                const std::string &key = request_arguments[1];
-                const std::string &value = request_arguments[2];
-
-                this->kv_store.set(key, value);
-                const char *response = "+OK\r\n";
-                buffer_append(this->outgoing_message, (const unsigned char *)response, strlen(response));
-            }
-            else{
+        else if (command == "SET")
+        {
+            if (request_arguments.size() < 3)
+            {
                 const char *err = "-ERR wrong number of arguments for 'set' command\r\n";
                 buffer_append(this->outgoing_message, (const unsigned char *)err, strlen(err));
+            }
+            else
+            {
+                std::string key = request_arguments[1];
+                std::string value = request_arguments[2];
+                std::optional<std::chrono::steady_clock::time_point> expiry = std::nullopt;
+                std::string condition = "";
+                bool keep_ttl = false;
+                bool want_get = false;
+
+                for (size_t i = 3; i < request_arguments.size(); i++)
+                {
+                    std::string argument = request_arguments[i];
+
+                    if (argument == "NX")
+                    {
+                        if (!condition.empty())
+                            goto syntax_error; // Already had NX or XX
+                        condition = "NX";
+                    }
+                    else if (argument == "XX")
+                    {
+                        if (!condition.empty())
+                            goto syntax_error; // Already had NX or XX
+                        condition = "XX";
+                    }
+                    else if (argument == "GET")
+                    {
+                        if (want_get)
+                            goto syntax_error; // Duplicate GET
+                        want_get = true;
+                    }
+                    else if (argument == "KEEPTTL")
+                    {
+                        if (expiry != std::nullopt || keep_ttl == true)
+                            goto syntax_error;
+                        keep_ttl = true;
+                    }
+                    else if (argument == "PX" || argument == "EX")
+                    {
+                        if (keep_ttl || expiry != std::nullopt)
+                            goto syntax_error;
+
+                        if (i + 1 < request_arguments.size())
+                        {
+                            std::string val_str = request_arguments[++i];
+                            long long time_val = parse_header_value(val_str.begin(), val_str.end());
+
+                            if (time_val <= 0)
+                            {
+                                std::string err = "-ERR value is not an integer or out of range\r\n";
+                                buffer_append(this->outgoing_message, (const unsigned char *)err.c_str(), err.length());
+                                return true;
+                            }
+
+                            auto time_now = std::chrono::steady_clock::now();
+                            if (argument == "PX")
+                                expiry = time_now + std::chrono::milliseconds(time_val);
+                            else
+                                expiry = time_now + std::chrono::seconds(time_val);
+                        }
+                        else
+                        {
+                            goto syntax_error;
+                        } // No number provided after PX/EX
+                    }
+                    else
+                    {
+                        // Truly an unknown flag for the SET command
+                        goto syntax_error;
+                    }
+                }
+            syntax_error:
+            {
+                const char *err = "-ERR syntax error\r\n";
+                buffer_append(this->outgoing_message, (const unsigned char *)err, strlen(err));
+                return true;
+            }
+
+                KeyValueStore::ValueEntry value_entry = {value, expiry};
+                this->kv_store.set(key, value_entry);
+
+                // After the loop, execute the KVStore logic...
+                return true;
             }
         }
         else
@@ -352,38 +443,4 @@ void Connection::buffer_append(std::vector<unsigned char> &buffer, const unsigne
 void Connection::buffer_consume(std::vector<unsigned char> &buffer, unsigned long length)
 {
     buffer.erase(buffer.begin(), buffer.begin() + length);
-}
-
-int Connection::parse_header_value(BufferedIterator start, BufferedIterator end)
-{
-    if (start == end)
-    {
-        return -2;
-    }
-
-    int value = 0;
-    bool is_negative = false;
-
-    BufferedIterator current = start;
-
-    if (*current == '-')
-    {
-        is_negative = true;
-        current++;
-        if (current == end)
-            return -2;
-    }
-
-    for (; current < end; ++current)
-    {
-        unsigned char c = *current;
-        if (c < '0' || c > '9')
-        {
-            return -2;
-        }
-
-        value = (value * 10) + (c - '0');
-    }
-
-    return (is_negative) ? -value : value;
 }
