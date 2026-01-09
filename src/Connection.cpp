@@ -1,5 +1,7 @@
 #include "KeyValueStore.hpp"
 #include "Connection.hpp"
+#include "RESPHandler.hpp"
+#include "Utils.hpp"
 #include <iostream>
 #include <unistd.h>
 #include <cstring>
@@ -128,138 +130,20 @@ void Connection::handle_write()
 
 bool Connection::try_one_request()
 {
-    size_t cursor = 0;
-    // No incoming message. return. read = true
-    if (this->incoming_message.size() == 0)
-    {
-        return false;
-    }
-    // Message does not start with *. Does not follow RESP protocol. close = true
-    if (this->incoming_message[cursor] != '*')
-    {
-        std::cerr << "Protocol Error: Message must start with *\n";
+    RESPRequest request = RESPHandler::parse_request(this->incoming_message);
+
+    if(request.status == ParseStatus::ERROR){
         this->want_read = false;
         this->want_close = true;
         return false;
     }
-
-    const char target[] = "\r\n";
-
-    // Find the first carriage return(\r\n) after *. Then we can get the message length between * and \r\n.
-    auto request_header_end_iterator = std::search(
-        this->incoming_message.begin(),
-        this->incoming_message.end(),
-        target,
-        target + 2);
-
-    // Did not find \r\n. So the entire header has not arrived. read = true. return
-    if (request_header_end_iterator == this->incoming_message.end())
-    {
+    else if( request.status == ParseStatus::PARTIAL){
         return false;
     }
 
-    long long array_length = parse_header_value(
-        this->incoming_message.begin() + 1,
-        request_header_end_iterator);
-
-    if (array_length < 0)
+    if (request.args.size() > 0)
     {
-        std::cerr << "Protocol Error: Invalid Array Length\n";
-        this->want_read = false;
-        this->want_close = true;
-        return false;
-    }
-
-    // We use static_cast<size_t> to tell the compiler: "I know this int is positive now, so treat it as unsigned."
-    if (static_cast<size_t>(array_length) > MAX_ARGS_COUNT)
-    {
-        std::cerr << "Security: Array too large\n";
-        this->want_read = false;
-        this->want_close = true;
-        return false;
-    }
-
-    std::vector<std::string> request_arguments;
-
-    cursor = std::distance(this->incoming_message.begin(), request_header_end_iterator) + 2;
-    // Cursor at the next position of \r\n. cursor->|
-    //                        [* , 1 , 2 , \r , \n, $ , .....]
-    for (int i = 0; i < array_length; i++)
-    {
-        if (cursor >= this->incoming_message.size())
-        {
-            return false; // partial request
-        }
-
-        if (this->incoming_message[cursor] != '$')
-        {
-            std::cerr << "Protocol Error: Expected character $\n";
-            this->want_read = false;
-            this->want_close = true;
-            return false;
-        }
-        // Find the first carriage return(\r\n) after $. Then we can get the message length between $ and \r\n.
-        auto iterator = std::search(
-            this->incoming_message.begin() + cursor + 1,
-            this->incoming_message.end(),
-            target,
-            target + 2);
-        // Didnot find \r\n. So the entire header has not arrived. read = true. return
-        if (iterator == this->incoming_message.end())
-        {
-            return false;
-        }
-
-        long long string_length = parse_header_value(
-            this->incoming_message.begin() + cursor + 1,
-            iterator);
-
-        if (string_length < 0)
-        {
-            std::cerr << "Protocol Error: Invalid String Length\n";
-            this->want_read = false;
-            this->want_close = true;
-            return false;
-        }
-
-        // 2. Second, check for Security Limits (Size)
-        // We use static_cast<size_t> to tell the compiler: "I know this int is positive now, so treat it as unsigned."
-        if (static_cast<size_t>(string_length) > MAX_MSG_SIZE)
-        {
-            std::cerr << "Security: String too large\n"; // Distinct error message!
-            this->want_read = false;
-            this->want_close = true;
-            return false;
-        }
-
-        cursor = std::distance(this->incoming_message.begin(), iterator) + 2; // Cursor at 3rd line
-
-        if (cursor >= this->incoming_message.size())
-        {
-            return false; // Parial request, read = true
-        }
-
-        // Cursor at the begining of string, set next_cursor at the end of the string.
-        // next_cursor = cursor + string_length + 2(for \r\n)
-        size_t next_cursor = cursor + string_length + 2;
-
-        if (next_cursor > this->incoming_message.size())
-        {
-            return false; // Parial request, read = true
-        }
-
-        std::string argument(
-            this->incoming_message.begin() + cursor,
-            this->incoming_message.begin() + cursor + string_length);
-
-        request_arguments.push_back(argument);
-
-        cursor = next_cursor;
-    }
-
-    if (request_arguments.size() > 0)
-    {
-        std::string command = request_arguments[0];
+        std::string command = request.args[0];
 
         if (command == "PING")
         {
@@ -271,9 +155,9 @@ bool Connection::try_one_request()
         }
         else if (command == "ECHO")
         {
-            if (request_arguments.size() > 1)
+            if (request.args.size() > 1)
             {
-                std::string payload = request_arguments[1];
+                std::string payload = request.args[1];
                 std::string response = "$" + std::to_string(payload.length()) + "\r\n" + payload + "\r\n";
 
                 buffer_append(
@@ -291,9 +175,9 @@ bool Connection::try_one_request()
         else if (command == "GET")
         {
 
-            if (request_arguments.size() > 1)
+            if (request.args.size() > 1)
             {
-                std::string &key = request_arguments[1];
+                std::string &key = request.args[1];
                 std::optional<KeyValueStore::ValueEntry> result = this->kv_store.get(key);
                 if (result.has_value() == true)
                 {
@@ -331,23 +215,23 @@ bool Connection::try_one_request()
         }
         else if (command == "SET")
         {
-            if (request_arguments.size() < 3)
+            if (request.args.size() < 3)
             {
                 const char *err = "-ERR wrong number of arguments for 'set' command\r\n";
                 buffer_append(this->outgoing_message, (const unsigned char *)err, strlen(err));
             }
             else
             {
-                std::string key = request_arguments[1];
-                std::string value = request_arguments[2];
+                std::string key = request.args[1];
+                std::string value = request.args[2];
                 std::optional<std::chrono::steady_clock::time_point> expiry = std::nullopt;
                 std::string condition = "";
                 bool keep_ttl = false;
                 bool want_get = false;
 
-                for (size_t i = 3; i < request_arguments.size(); i++)
+                for (size_t i = 3; i < request.args.size(); i++)
                 {
-                    std::string argument = request_arguments[i];
+                    std::string argument = request.args[i];
 
                     if (argument == "NX")
                     {
@@ -378,9 +262,9 @@ bool Connection::try_one_request()
                         if (keep_ttl || expiry != std::nullopt)
                             goto syntax_error;
 
-                        if (i + 1 < request_arguments.size())
+                        if (i + 1 < request.args.size())
                         {
-                            std::string val_str = request_arguments[++i];
+                            std::string val_str = request.args[++i];
                             long long time_val = parse_header_value(val_str.begin(), val_str.end());
 
                             if (time_val <= 0)
@@ -429,7 +313,7 @@ bool Connection::try_one_request()
         }
     }
 
-    buffer_consume(this->incoming_message, cursor);
+    buffer_consume(this->incoming_message, request.parsed_bytes);
 
     // Return true so the server loops again to check for pipelined requests
     return true;
